@@ -9,8 +9,7 @@
     "notifications"
   ],
   "host_permissions": [
-    "https://seller.indiamart.com/*",
-    "<all_urls>"
+    "https://seller.indiamart.com/*"
   ],
   "background": {
     "service_worker": "background.js"

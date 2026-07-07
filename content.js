@@ -11,29 +11,57 @@ const SCAN_INTERVAL  = 15000;
 let enabled         = true;
 let keywords        = [];   // include keywords (OR logic)
 let excludeKeywords = [];   // block keywords — if any match, skip the lead
-let webhookUrl      = "";   // your backend POST endpoint
-let clickedIds      = new Set();
+
+// contactedIds = leads we have ACTUALLY clicked "Contact Buyer Now" on.
+// Persisted to chrome.storage.local so it survives the tab reloads that
+// background.js performs — otherwise the same lead could get clicked
+// (and cost another credit) again after every reload.
+let contactedIds    = new Set();
+const CONTACTED_IDS_STORAGE_KEY = "clickedLeadIds";
+const CONTACTED_IDS_MAX         = 3000; // trim oldest beyond this to keep storage small
+
+// seenIds = leads we've already evaluated+logged this session (skipped ones).
+// Intentionally NOT persisted — just avoids re-logging the same skip every
+// scan cycle. Resets on reload/navigation, which is fine since it's only
+// about log noise, not correctness.
+let seenIds      = new Set();
+
 let totalClicked = 0;
 let scanTimer    = null;
 let idleTimer    = null;
 
-// ── Load persisted state ───────────────────────────────────────────
-chrome.storage.local.get(["enabled", "totalClicked", "keywords", "excludeKeywords", "webhookUrl"], (data) => {
-  enabled         = data.enabled !== false;
-  totalClicked    = data.totalClicked || 0;
-  keywords        = data.keywords || [];
-  excludeKeywords = data.excludeKeywords || [];
-  webhookUrl      = data.webhookUrl || "";
-  if (enabled) {
-    startWatching();
-    startAntiIdle();
+function persistContactedIds() {
+  let ids = [...contactedIds];
+  if (ids.length > CONTACTED_IDS_MAX) {
+    ids = ids.slice(ids.length - CONTACTED_IDS_MAX); // keep most recent
+    contactedIds = new Set(ids);
   }
-});
+  chrome.storage.local.set({ [CONTACTED_IDS_STORAGE_KEY]: ids });
+}
+
+// ── Load persisted state ───────────────────────────────────────────
+chrome.storage.local.get(
+  ["enabled", "totalClicked", "keywords", "excludeKeywords", CONTACTED_IDS_STORAGE_KEY],
+  (data) => {
+    enabled         = data.enabled !== false;
+    totalClicked    = data.totalClicked || 0;
+    keywords        = data.keywords || [];
+    excludeKeywords = data.excludeKeywords || [];
+    contactedIds    = new Set(data[CONTACTED_IDS_STORAGE_KEY] || []);
+
+    console.log(`[IndiaMART Bot] 🔁 Restored ${contactedIds.size} previously-contacted lead ID(s) from storage`);
+
+    if (enabled) {
+      startWatching();
+      startAntiIdle();
+    }
+  }
+);
 
 // ── Messages from popup ────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "GET_STATUS") {
-    sendResponse({ enabled, totalClicked, url: location.href, keywords, excludeKeywords, webhookUrl });
+    sendResponse({ enabled, totalClicked, url: location.href, keywords, excludeKeywords });
   }
 
   if (msg.type === "SET_ENABLED") {
@@ -53,12 +81,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "SET_EXCLUDE_KEYWORDS") {
     excludeKeywords = msg.excludeKeywords;
     chrome.storage.local.set({ excludeKeywords });
-    sendResponse({ ok: true });
-  }
-
-  if (msg.type === "SET_WEBHOOK") {
-    webhookUrl = msg.webhookUrl;
-    chrome.storage.local.set({ webhookUrl });
     sendResponse({ ok: true });
   }
 
@@ -272,23 +294,42 @@ function stopAntiIdle() {
 // LEAD DETECTION & CLICKING
 // ─────────────────────────────────────────────────────────────────
 
+// A button only counts as a real lead-contact button if it sits inside a
+// card that actually has an ofrid (IndiaMART's lead identifier). This stops
+// unrelated page elements (nav "Contact Us" links, chat widgets, etc.) that
+// happen to match a loose class/id selector from being clicked.
+function isInsideValidLeadCard(el) {
+  const card = getCardContainer(el);
+  if (!card) return false;
+  return !!card.querySelector('input[name="ofrid"], [id^="ofrid"]');
+}
+
 function findContactButtons() {
   const all = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
   while (walker.nextNode()) {
     const el = walker.currentNode;
     const text = el.innerText?.trim() || "";
+    // Exact-text match is already a strong, reliable signal on its own.
     if (
       (text === "Contact Buyer Now" || text === "Contact Now") &&
       el.children.length === 0
     ) all.push(el);
   }
+  // Loose class/id-based fallback selectors — these are broad enough to
+  // false-positive on unrelated UI, so require a valid lead card (ofrid)
+  // before accepting them.
   for (const sel of [
     'button[class*="contact" i]', 'a[class*="contact" i]',
     '[class*="contactBuyer"]',    '[id*="contactBuyer"]',
   ]) {
     document.querySelectorAll(sel).forEach((el) => {
-      if (!all.includes(el)) all.push(el);
+      if (all.includes(el)) return;
+      if (!isInsideValidLeadCard(el)) {
+        console.log(`[IndiaMART Bot] 🚫 Ignored non-lead element matching "${sel}" (no ofrid card found)`);
+        return;
+      }
+      all.push(el);
     });
   }
   return all;
@@ -356,109 +397,11 @@ function isVisible(el) {
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function clickButton(btn, leadMeta) {
-  // Find the card so we can scrape contact details from it after clicking
-  let card = btn;
-  for (let i = 0; i < 10; i++) {
-    card = card.parentElement || card;
-    if (!card) break;
-    const cls = card.className || "";
-    if (cls.includes("lstNw") || cls.includes("BUY_") || cls.includes("f1 ")) break;
-  }
-
   btn.scrollIntoView({ behavior: "smooth", block: "center" });
   await delay(400);
   btn.click();
   await delay(CLICK_DELAY_MS);
   await closeModal();
-
-  // Extract contact details that IndiaMART reveals after clicking
-  const contact = await extractContactDetails(card);
-
-  // Build payload and send to webhook
-  const payload = {
-    timestamp:  new Date().toISOString(),
-    leadId:     leadMeta.id,
-    title:      leadMeta.title,
-    phone:      contact.phone,
-    email:      contact.email,
-    buyerName:  contact.buyerName,
-    city:       contact.city,
-    country:    "India",
-    pageUrl:    location.href,
-  };
-
-  console.log(`[${timestamp()}] 📋 Contact extracted — phone: ${contact.phone || "—"} | email: ${contact.email || "—"}`);
-
-  await sendToWebhook(payload);
-}
-
-
-// ── Extract contact details after clicking ─────────────────────────
-// IndiaMART reveals phone/email in the card or a modal after clicking.
-async function extractContactDetails(card) {
-  // Wait up to 4s for contact details to appear
-  const deadline = Date.now() + 4000;
-  while (Date.now() < deadline) {
-    await delay(400);
-
-    // Phone: look for 10-digit Indian numbers or formatted versions
-    const phoneMatch = card.innerText.match(/(?:\+91[\s-]?)?[6-9]\d{9}/);
-
-    // Email: standard email pattern
-    const emailMatch = card.innerText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
-
-    // Buyer name: often in a <strong> or specific class after reveal
-    let buyerName = "";
-    const nameEl =
-      card.querySelector('[class*="buyer" i] strong, [class*="name" i] strong') ||
-      card.querySelector('[class*="contName"], [class*="cont_name"]');
-    if (nameEl) buyerName = nameEl.innerText.trim();
-
-    // City
-    let city = "";
-    const cityEl = card.querySelector('[id^="card_city_"], [class*="city" i]');
-    if (cityEl) city = (cityEl.value || cityEl.innerText || "").trim();
-
-    if (phoneMatch || emailMatch) {
-      return {
-        phone:     phoneMatch ? phoneMatch[0] : null,
-        email:     emailMatch ? emailMatch[0] : null,
-        buyerName: buyerName || null,
-        city:      city || null,
-      };
-    }
-  }
-  return { phone: null, email: null, buyerName: null, city: null };
-}
-
-// ── POST lead data to webhook ──────────────────────────────────────
-// Delegates to background service worker to avoid IndiaMART's CSP
-// blocking fetch() calls from content scripts to http://localhost
-async function sendToWebhook(payload) {
-  if (!webhookUrl) {
-    console.warn(`[${timestamp()}] ⚠ No webhook URL set — skipping POST`);
-    return;
-  }
-  try {
-    // Send to background service worker which has no CSP restrictions
-    chrome.runtime.sendMessage({
-      type:    "POST_WEBHOOK",
-      url:     webhookUrl,
-      payload: payload,
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.warn(`[${timestamp()}] ⚠ Background message error: ${chrome.runtime.lastError.message}`);
-        return;
-      }
-      if (response?.ok) {
-        console.log(`[${timestamp()}] 📤 Sent to webhook — ${payload.title}`);
-      } else {
-        console.warn(`[${timestamp()}] ⚠ Webhook failed — ${response?.error}`);
-      }
-    });
-  } catch (err) {
-    console.warn(`[${timestamp()}] ⚠ sendToWebhook error: ${err.message}`);
-  }
 }
 
 function timestamp() {
@@ -469,43 +412,55 @@ async function scanAndClick() {
   if (!enabled) return;
 
   const buttons = findContactButtons();
-  let newClicks = 0;
+  let newClicks        = 0;
+  let scannedCount     = 0;
+  let alreadyDoneCount = 0;
+  let skippedCount     = 0;
 
   for (const btn of buttons) {
     const id = getLeadId(btn);
-    if (clickedIds.has(id)) continue;
+
+    // Already actually contacted (persisted across reloads) — never re-click.
+    if (contactedIds.has(id)) { alreadyDoneCount++; continue; }
     if (!isVisible(btn)) continue;
+
+    scannedCount++;
 
     // Get title independently — don't fall back to card ID (e.g. "BLCard1")
     const title = getLeadTitle(btn) || "Unknown Lead";
 
     // ── Filters (country + keyword) ────────────────────────────
     if (!matchesFilters(btn)) {
-      // Only log skips once per lead, not every scan cycle
-      if (!clickedIds.has(id)) {
-        console.log(`[${timestamp()}] ⏭ SKIPPED — "${title}"`);
+      skippedCount++;
+      // Only log skips once per lead per session, not every scan cycle
+      if (!seenIds.has(id)) {
+        console.log(`[${timestamp()}] ⏭ SKIPPED — "${title}" [id: ${id}]`);
+        seenIds.add(id);
       }
-      clickedIds.add(id);
       continue;
     }
 
     // ── Lead detected — log before clicking ───────────────────
     console.log(`[${timestamp()}] 🔍 LEAD DETECTED — "${title}" [id: ${id}]`);
 
-    clickedIds.add(id);
+    seenIds.add(id);
+    contactedIds.add(id);
+    persistContactedIds(); // persist immediately so a reload can't double-click this lead
+
     await clickButton(btn, { id, title });
     newClicks++;
     totalClicked++;
 
-    console.log(`[${timestamp()}] ✅ CLICKED "Contact Buyer Now" — "${title}"`);
+    console.log(`[${timestamp()}] ✅ CLICKED "Contact Buyer Now" — "${title}" [id: ${id}]`);
 
     chrome.storage.local.set({ totalClicked });
     chrome.runtime.sendMessage({ type: "CLICKED", totalClicked }).catch(() => {});
   }
 
-  if (newClicks > 0) {
-    console.log(`[${timestamp()}] 📊 ${newClicks} lead(s) contacted this scan | Total ever: ${totalClicked}`);
-  }
+  console.log(
+    `[${timestamp()}] 📊 Scan summary — found: ${buttons.length} | already contacted: ${alreadyDoneCount} | ` +
+    `evaluated: ${scannedCount} | skipped by filter: ${skippedCount} | newly clicked: ${newClicks} | total ever: ${totalClicked}`
+  );
 }
 
 // ── Mutation observer + interval ───────────────────────────────────
@@ -534,7 +489,7 @@ let lastUrl = location.href;
 new MutationObserver(() => {
   if (location.href !== lastUrl) {
     lastUrl = location.href;
-    clickedIds.clear();
+    seenIds.clear(); // just resets skip-log dedup; contactedIds (persisted) is untouched
     if (enabled) { stopWatching(); setTimeout(startWatching, 1500); }
   }
 }).observe(document, { subtree: true, childList: true });

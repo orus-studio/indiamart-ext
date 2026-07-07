@@ -4,8 +4,22 @@
  * - Sets a periodic alarm to reload the buy-leads tab so fresh leads appear
  */
 
-const BUY_LEADS_URL   = "https://seller.indiamart.com/bltxn/";
-const RELOAD_INTERVAL = 1; // minutes between tab reloads (Chrome alarms minimum = 1)
+const BUY_LEADS_URL    = "https://seller.indiamart.com/bltxn/";
+const RELOAD_MIN_MIN   = 1; // minimum minutes between tab reloads
+const RELOAD_MAX_MIN   = 5; // maximum minutes between tab reloads
+
+function randomReloadDelayMinutes() {
+  return RELOAD_MIN_MIN + Math.random() * (RELOAD_MAX_MIN - RELOAD_MIN_MIN);
+}
+
+// Schedules the next reload at a random point 1-5 minutes from now.
+// (Chrome alarms only support one-shot "delayInMinutes" precisely, so we
+// re-create the alarm each time it fires rather than using a fixed period.)
+function scheduleNextReload() {
+  const delay = randomReloadDelayMinutes();
+  chrome.alarms.create("reloadLeads", { delayInMinutes: delay });
+  console.log(`[IndiaMART Bot] ⏱ Next tab reload scheduled in ${delay.toFixed(1)} min`);
+}
 
 // ── Badge helper ───────────────────────────────────────────────────
 function setBadge(count) {
@@ -24,58 +38,58 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "CLICKED") {
     setBadge(msg.totalClicked);
   }
-
-  // POST to webhook — done here to avoid IndiaMART's CSP restrictions
-  if (msg.type === "POST_WEBHOOK") {
-    fetch(msg.url, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(msg.payload),
-    })
-    .then(async (res) => {
-      const body = await res.json().catch(() => ({}));
-      console.log(`[Webhook] ✅ ${res.status} — ${JSON.stringify(body)}`);
-      sendResponse({ ok: res.ok, status: res.status, body });
-    })
-    .catch((err) => {
-      console.error(`[Webhook] ❌ fetch failed: ${err.message}`);
-      sendResponse({ ok: false, error: err.message });
-    });
-
-    return true; // keep message channel open for async response
-  }
 });
 
-// ── Periodic alarm to reload the buy-leads tab ────────────────────
-chrome.alarms.create("reloadLeads", { periodInMinutes: RELOAD_INTERVAL });
-
+// ── Randomized alarm to reload the buy-leads tab (1-5 min) ─────────
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "reloadLeads") return;
 
+  // Always schedule the next one first, so a failure below can't kill the loop.
+  scheduleNextReload();
+
   const { enabled } = await chrome.storage.local.get("enabled");
-  if (enabled === false) return;
+  if (enabled === false) {
+    console.log("[IndiaMART Bot] ⏸ Bot disabled — skipping scheduled reload");
+    return;
+  }
 
   // Find any open IndiaMART seller tab
   const tabs = await chrome.tabs.query({ url: "https://seller.indiamart.com/*" });
 
   if (tabs.length === 0) {
     // No tab open — open one
+    console.log("[IndiaMART Bot] 🆕 No seller tab open — opening buy-leads page");
     chrome.tabs.create({ url: BUY_LEADS_URL, active: false });
-  } else {
-    // Reload the first matching tab
-    for (const tab of tabs) {
-      if (tab.url.includes("bltxn") || tab.url.includes("buyLead")) {
-        chrome.tabs.reload(tab.id);
-        return;
-      }
-    }
-    // No buy-leads tab found — reload whatever seller tab is open
-    chrome.tabs.reload(tabs[0].id);
+    return;
   }
+
+  // Reload the first matching buy-leads tab
+  for (const tab of tabs) {
+    if (tab.url.includes("bltxn") || tab.url.includes("buyLead")) {
+      console.log(`[IndiaMART Bot] 🔄 Reloading buy-leads tab ${tab.id}`);
+      chrome.tabs.reload(tab.id);
+      return;
+    }
+  }
+  // No buy-leads tab found — reload whatever seller tab is open
+  console.log(`[IndiaMART Bot] 🔄 No buy-leads tab found — reloading seller tab ${tabs[0].id}`);
+  chrome.tabs.reload(tabs[0].id);
 });
 
 // ── On install: open the buy-leads page automatically ─────────────
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ enabled: true, totalClicked: 0 });
   chrome.tabs.create({ url: BUY_LEADS_URL });
+  scheduleNextReload();
+});
+
+// ── On browser/service-worker restart: make sure the loop is alive ──
+chrome.runtime.onStartup.addListener(() => {
+  scheduleNextReload();
+});
+
+// Also self-heal in case the alarm was somehow cleared without a matching
+// onInstalled/onStartup event (e.g. service worker woke up for another reason).
+chrome.alarms.get("reloadLeads", (alarm) => {
+  if (!alarm) scheduleNextReload();
 });

@@ -125,23 +125,6 @@
     .btn-open  { background: #1e40af; color: #bfdbfe; font-size: 11px; padding: 7px; }
     .btn-reset { background: transparent; border: 1px solid #334155; color: #64748b; font-size: 11px; padding: 7px; }
 
-    .webhook-box {
-      background: #1e293b; border: 1px solid #334155;
-      border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
-    }
-    .webhook-row { display: flex; gap: 6px; }
-    .webhook-row input {
-      flex: 1; background: #0f172a; border: 1px solid #334155;
-      border-radius: 6px; padding: 6px 10px; font-size: 11px; color: #e2e8f0;
-      outline: none;
-    }
-    .webhook-row input:focus { border-color: #3b82f6; }
-    .webhook-row input::placeholder { color: #334155; }
-    .btn-save { background: #1e40af; color: #bfdbfe; border: none; border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 600; cursor: pointer; }
-    .btn-save:hover { background: #2563eb; }
-    .webhook-status { font-size: 10px; margin-top: 6px; color: #475569; }
-    .webhook-status.set { color: #4ade80; }
-
     .footer {
       padding: 8px 16px; border-top: 1px solid #1e293b;
       font-size: 10px; color: #334155; text-align: center;
@@ -199,16 +182,6 @@
       <div class="keyword-tags" id="exTags">
         <span class="kw-empty">No exclusions set</span>
       </div>
-    </div>
-
-    <!-- Webhook / Backend -->
-    <div class="section-label" style="color:#818cf8">Backend Webhook</div>
-    <div class="webhook-box">
-      <div class="webhook-row">
-        <input type="url" id="webhookInput" placeholder="https://your-server.com/leads" />
-        <button class="btn-save" id="webhookSave">Save</button>
-      </div>
-      <div class="webhook-status" id="webhookStatus">Not configured — leads won't be sent</div>
     </div>
 
     <button class="btn" id="toggleBtn">…</button>

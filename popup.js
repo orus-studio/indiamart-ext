@@ -176,36 +176,7 @@ toggleBtn.addEventListener("click", async () => {
   for (const tab of tabs) {
     chrome.tabs.sendMessage(tab.id, { type: "SET_ENABLED", value: newVal }).catch(() => {});
   }
-  // ── Webhook URL ────────────────────────────────────────────────────
-const webhookInput  = document.getElementById("webhookInput");
-const webhookSave   = document.getElementById("webhookSave");
-const webhookStatus = document.getElementById("webhookStatus");
-
-async function loadWebhook() {
-  const data = await chrome.storage.local.get("webhookUrl");
-  const url  = data.webhookUrl || "";
-  webhookInput.value = url;
-  if (url) {
-    webhookStatus.textContent = "✓ Sending leads to: " + url;
-    webhookStatus.className   = "webhook-status set";
-  } else {
-    webhookStatus.textContent = "Not configured — leads won't be sent";
-    webhookStatus.className   = "webhook-status";
-  }
-}
-
-webhookSave.addEventListener("click", async () => {
-  const url = webhookInput.value.trim();
-  await chrome.storage.local.set({ webhookUrl: url });
-  const tabs = await chrome.tabs.query({ url: "https://seller.indiamart.com/*" });
-  for (const tab of tabs) {
-    chrome.tabs.sendMessage(tab.id, { type: "SET_WEBHOOK", webhookUrl: url }).catch(() => {});
-  }
-  loadWebhook();
-});
-
-loadWebhook();
-refresh();
+  refresh();
 });
 
 // ── Open buy leads ─────────────────────────────────────────────────
@@ -219,65 +190,8 @@ resetBtn.addEventListener("click", async () => {
   for (const tab of tabs) {
     chrome.tabs.sendMessage(tab.id, { type: "RESET_COUNT" }).catch(() => {});
   }
-  // ── Webhook URL ────────────────────────────────────────────────────
-const webhookInput  = document.getElementById("webhookInput");
-const webhookSave   = document.getElementById("webhookSave");
-const webhookStatus = document.getElementById("webhookStatus");
-
-async function loadWebhook() {
-  const data = await chrome.storage.local.get("webhookUrl");
-  const url  = data.webhookUrl || "";
-  webhookInput.value = url;
-  if (url) {
-    webhookStatus.textContent = "✓ Sending leads to: " + url;
-    webhookStatus.className   = "webhook-status set";
-  } else {
-    webhookStatus.textContent = "Not configured — leads won't be sent";
-    webhookStatus.className   = "webhook-status";
-  }
-}
-
-webhookSave.addEventListener("click", async () => {
-  const url = webhookInput.value.trim();
-  await chrome.storage.local.set({ webhookUrl: url });
-  const tabs = await chrome.tabs.query({ url: "https://seller.indiamart.com/*" });
-  for (const tab of tabs) {
-    chrome.tabs.sendMessage(tab.id, { type: "SET_WEBHOOK", webhookUrl: url }).catch(() => {});
-  }
-  loadWebhook();
+  refresh();
 });
 
-loadWebhook();
-refresh();
-});
-
-// ── Webhook URL ────────────────────────────────────────────────────
-const webhookInput  = document.getElementById("webhookInput");
-const webhookSave   = document.getElementById("webhookSave");
-const webhookStatus = document.getElementById("webhookStatus");
-
-async function loadWebhook() {
-  const data = await chrome.storage.local.get("webhookUrl");
-  const url  = data.webhookUrl || "";
-  webhookInput.value = url;
-  if (url) {
-    webhookStatus.textContent = "✓ Sending leads to: " + url;
-    webhookStatus.className   = "webhook-status set";
-  } else {
-    webhookStatus.textContent = "Not configured — leads won't be sent";
-    webhookStatus.className   = "webhook-status";
-  }
-}
-
-webhookSave.addEventListener("click", async () => {
-  const url = webhookInput.value.trim();
-  await chrome.storage.local.set({ webhookUrl: url });
-  const tabs = await chrome.tabs.query({ url: "https://seller.indiamart.com/*" });
-  for (const tab of tabs) {
-    chrome.tabs.sendMessage(tab.id, { type: "SET_WEBHOOK", webhookUrl: url }).catch(() => {});
-  }
-  loadWebhook();
-});
-
-loadWebhook();
+// ── Init (runs once when popup opens) ──────────────────────────────
 refresh();
